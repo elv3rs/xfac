@@ -59,28 +59,34 @@ inline auto QuadratureGK15(double a=0, double b=1)
 /// where $\Delta = (b -a)/2^R $ and $i=0,1,...,2^R-1 $.
 /// The function $f$ is mapped to a tensor with $R$ legs in the following way. The binary digits $\{\sigma_i\}$ of $i$ are used as indices of the tensor $F$ defined by:
 /// $ F(\{\sigma_i\})=f(x_i) $
+///
+/// When fused=false, the multi-dimensional bit ordering is controlled by the `grouped` flag:
+/// - grouped=false (default, interleaved): bits are ordered as x1 y1 z1 x2 y2 z2 ...
+/// - grouped=true: bits are ordered as x1 x2 ... y1 y2 ... z1 z2 ...
 struct Quantics {
     double a=0, b=1;         ///< the start and end of the interval for all the variables
     int nBit=10;             ///< number of bit for each variable
     int dim=1;               ///< dimension of the hypercube
     bool fused=false;        ///< whether to combine the bits of the same "scale"
+    bool grouped=false;      ///< whether to group bits by dimension (only for unfused)
 
     double deltaX;
     double deltaVolume;
     int tensorLen;
     int tensorLocDim;
 
-    Quantics(double a_=0, double b_=1, int nBit_=10, int dim_=1, bool fused_=false)
+    Quantics(double a_=0, double b_=1, int nBit_=10, int dim_=1, bool fused_=false, bool grouped_=false)
         : a(a_)
         , b(b_)
         , nBit(nBit_)
         , dim(dim_)
         , fused(fused_)
+        , grouped(grouped_)
         , deltaX( (b-a)/(1ull<<nBit) )
         , deltaVolume( pow(deltaX,dim) )
         , tensorLen( fused ? nBit : nBit*dim )
         , tensorLocDim( fused ? 1<<dim : 2 )
-    { assert(nBit<64); }
+    { assert(nBit<64); assert(!(fused&&grouped)); }
 
 
     vector<int> tensorDims() const { return vector(tensorLen, tensorLocDim); }
@@ -90,9 +96,10 @@ struct Quantics {
         assert(dim==us.size());
         vector<int> id(tensorLen,0);
         for(auto i=0u; i<us.size(); i++) {
-            std::bitset<64> bi=(us[i]-a)/deltaX;
+            std::bitset<64> bi = std::round((us[i]-a)/deltaX);
             for(auto d=0; d<nBit; d++)
                 if (fused) id[d] |= (bi[d]<<i);
+                else if (grouped) id[i*nBit+d]=bi[d];
                 else id[i+d*dim]=bi[d];
         }
         return id;
@@ -110,19 +117,22 @@ struct Quantics {
             std::bitset<64> bi;
             for(auto d=0; d<nBit; d++)
                 if (fused) bi[d]=id[d] & (1<<i);
+                else if (grouped) bi[d]=id[i*nBit+d];
                 else bi[d]=id[i+d*dim];
             us[i]=a+deltaX*bi.to_ullong();
         }
         return us;
     }
 
-    void save(std::ostream &out) const { out<<std::setprecision(18)<<a<<" "<<b<<" "<<nBit<<" "<<dim<<" "<<fused<<std::endl; }
+    void save(std::ostream &out) const { out<<std::setprecision(18)<<a<<" "<<b<<" "<<nBit<<" "<<dim<<" "<<fused<<" "<<grouped<<std::endl; }
 
     static Quantics load(std::istream& in)
     {
         Quantics g0;
         in>>g0.a>>g0.b>>g0.nBit>>g0.dim>>g0.fused;
-        return Quantics(g0.a,g0.b,g0.nBit,g0.dim,g0.fused);
+        g0.grouped = false;
+        if (in.peek() != EOF) in >> g0.grouped;
+        return Quantics(g0.a,g0.b,g0.nBit,g0.dim,g0.fused,g0.grouped);
     }
 
 };
