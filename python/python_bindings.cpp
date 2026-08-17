@@ -28,10 +28,37 @@ using cmpx=complex<double>;
 template<typename T>
 void declare_TensorCI(py::module &m, std::string typestr) {
     using TensorTraind=TensorTrain<T>;
-    py::class_<TensorTraind>(m, ("TensorTrain"s+typestr).c_str())
+    auto copy_to_cube = [](py::handle src) -> arma::Cube<T> {
+        auto arr = py::array_t<T, py::array::f_style>::ensure(src);
+        if (!arr) throw std::invalid_argument("could not convert to array");
+        auto buf = arr.request();
+        if (buf.ndim != 3)
+            throw std::invalid_argument("core must be a 3D array, got ndim=" + std::to_string(buf.ndim));
+        arma::Cube<T> cube((arma::uword)buf.shape[0], (arma::uword)buf.shape[1], (arma::uword)buf.shape[2]);
+        std::copy_n(static_cast<const T*>(buf.ptr), cube.n_elem, cube.memptr());
+        return cube;
+    };
+
+    py::class_<TensorTraind>(m, ("TensorTrain"s+typestr).c_str(), py::dynamic_attr())
             .def(py::init<size_t>(), "len"_a)
+            .def(py::init([copy_to_cube](py::list const& cores) {
+                auto tt = TensorTraind(cores.size());
+                for (auto i=0u; i<cores.size(); i++)
+                    tt.M[i] = copy_to_cube(cores[i]);
+                return tt;
+            }), "cores"_a)
             .def_readonly("core",  &TensorTraind::M)
-            .def("setCoreAt",[](TensorTraind &tt, int i, py::array const& Mi){ tt.M.at(i)=carma::arr_to_cube<T>(Mi); }, "i"_a, "Mi"_a)
+            .def("setCoreAt",[copy_to_cube](TensorTraind &tt, int i, py::handle const& Mi){
+                if (i < 0 || (size_t)i >= tt.M.size())
+                    throw std::out_of_range("setCoreAt: index " + std::to_string(i) + " out of range");
+                tt.M[i] = copy_to_cube(Mi);
+            }, "i"_a, "Mi"_a)
+            .def("setCores",[copy_to_cube](TensorTraind &tt, py::list const& cores) {
+                if (cores.size() != tt.M.size())
+                    throw std::invalid_argument("setCores: wrong number of cores (expected " + std::to_string(tt.M.size()) + ", got " + std::to_string(cores.size()) + ")");
+                for (auto i=0u; i<cores.size(); i++)
+                    tt.M[i] = copy_to_cube(cores[i]);
+            }, "cores"_a)
             .def("eval", &TensorTraind::eval)
             .def("sum", &TensorTraind::sum)
             .def("sum1", &TensorTraind::sum1)
@@ -43,6 +70,13 @@ void declare_TensorCI(py::module &m, std::string typestr) {
             .def("trueError",&TensorTraind::trueError, "f"_a, "max_n_eval"_a=1000000)
             .def("save", py::overload_cast<string>(&TensorTraind::save, py::const_))
             .def_static("load", py::overload_cast<string>(&TensorTraind::load))
+            .def("__len__", [](TensorTraind const& tt) { return tt.M.size(); })
+            .def("__iter__", [](TensorTraind &tt) {
+                py::list cores;
+                for (const auto& c : tt.M)
+                    cores.append(carma::cube_to_arr(c));
+                return cores.attr("__iter__")();
+            })
             ;
 
     using TensorTreed=TensorTree<T>;
@@ -76,7 +110,7 @@ void declare_TensorCI(py::module &m, std::string typestr) {
     m.def("sum", &xfac::sum<T>, "tts"_a, "reltol"_a=1e-12, "maxBondDim"_a=0, "use_svd"_a=false);
 
     using QTensorTraind=QTensorTrain<T>;
-    py::class_<QTensorTraind>(m, ("QTensorTrain"s+typestr).c_str())
+    py::class_<QTensorTraind>(m, ("QTensorTrain"s+typestr).c_str(), py::dynamic_attr())
             .def(py::init<TensorTraind, grid::Quantics>(), "tt"_a,"grid"_a)
             .def_readonly("tt",  &QTensorTraind::tt)
             .def_readonly("grid",  &QTensorTraind::grid)
@@ -84,6 +118,13 @@ void declare_TensorCI(py::module &m, std::string typestr) {
             .def("integral", &QTensorTraind::integral)
             .def("save", py::overload_cast<string>(&QTensorTraind::save, py::const_))
             .def_static("load", py::overload_cast<string>(&QTensorTraind::load))
+            .def("__len__", [](QTensorTraind const& qtt) { return qtt.tt.M.size(); })
+            .def("__iter__", [](QTensorTraind &qtt) {
+                py::list cores;
+                for (const auto& c : qtt.tt.M)
+                    cores.append(carma::cube_to_arr(c));
+                return cores.attr("__iter__")();
+            })
             ;
 
     using tensorF=function<T(vector<int>)>;
@@ -279,7 +320,7 @@ PYBIND11_MODULE(xfacpy, m) {
 
     using grid::Quantics;
     py::class_<Quantics>(m,"QuanticsGrid")
-            .def(py::init<double,double,int,int,bool>(), "a"_a=0,"b"_a=1,"nBit"_a=10,"dim"_a=1,"fused"_a=false)
+            .def(py::init<double,double,int,int,bool,bool>(), "a"_a=0,"b"_a=1,"nBit"_a=10,"dim"_a=1,"fused"_a=false,"grouped"_a=false)
             .def_readonly("deltaX",&Quantics::deltaX)
             .def_readonly("deltaVolume",&Quantics::deltaVolume)
             .def_readonly("tensorLen",&Quantics::tensorLen)
